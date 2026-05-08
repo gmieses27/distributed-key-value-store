@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed KV Store — Live Cluster</title>
+<style>
+  :root {
+    --bg:      #0e0c1a;
+    --bg2:     #16132a;
+    --panel:   #1e1a34;
+    --border:  #2e2a4a;
+    --text:    #e8e4ff;
+    --dim:     #8880aa;
+    --yellow:  #f0c040;
+    --teal:    #40d0b0;
+    --orange:  #f07040;
+    --red:     #e04060;
+    --green:   #50d080;
+    --gray:    #505060;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--bg2);
+  }
+  header h1 { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: 0.04em; }
+  header .subtitle { color: var(--dim); font-size: 12px; }
+
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    height: calc(100vh - 57px);
+  }
+
+  /* ---- cluster canvas ---- */
+  .canvas-area {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  svg#cluster {
+    width: 100%;
+    max-width: 520px;
+    height: 360px;
+  }
+
+  .node-circle {
+    cursor: pointer;
+    transition: filter 0.2s;
+  }
+  .node-circle:hover { filter: brightness(1.2); }
+
+  /* ---- controls ---- */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    width: 100%;
+    max-width: 520px;
+  }
+
+  .node-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .node-label-ctrl { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    transition: background 0.15s, border-color 0.15s;
+    width: 100%;
+  }
+  .btn:hover { background: var(--border); }
+  .btn.kill  { border-color: var(--red);  color: var(--red); }
+  .btn.kill:hover  { background: rgba(224,64,96,0.15); }
+  .btn.resume { border-color: var(--green); color: var(--green); }
+  .btn.resume:hover { background: rgba(80,208,128,0.15); }
+
+  /* ---- right panel ---- */
+  .right-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-section {
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    margin-bottom: 12px;
+  }
+
+  .form-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .form-row label { width: 36px; color: var(--dim); font-size: 11px; }
+  .form-row input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .form-row input:focus { outline: none; border-color: var(--teal); }
+  .form-row .btn { flex: none; width: auto; padding: 5px 12px; }
+
+  .result-box {
+    margin-top: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    min-height: 32px;
+    font-size: 12px;
+    color: var(--green);
+    word-break: break-all;
+  }
+  .result-box.error { color: var(--red); }
+
+  /* ---- log panel ---- */
+  .log-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 16px;
+  }
+  .log-panel h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    margin-bottom: 10px;
+    flex-shrink: 0;
+  }
+  #log-entries {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 4px;
+  }
+  #log-entries::-webkit-scrollbar { width: 4px; }
+  #log-entries::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .log-entry {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 5px 8px;
+    font-size: 11px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    animation: slideIn 0.2s ease;
+  }
+  @keyframes slideIn { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+
+  .log-idx { color: var(--dim); min-width: 24px; }
+  .log-term { color: var(--orange); min-width: 32px; }
+  .log-cmd  { color: var(--teal); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---- kv store panel ---- */
+  .kv-panel {
+    padding: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .kv-panel h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    margin-bottom: 8px;
+  }
+  #kv-table {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    max-height: 100px;
+    overflow-y: auto;
+  }
+  #kv-table::-webkit-scrollbar { width: 4px; }
+  #kv-table::-webkit-scrollbar-thumb { background: var(--border); }
+  .kv-pair {
+    font-size: 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 3px 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .kv-pair .kv-k { color: var(--yellow); }
+  .kv-pair .kv-v { color: var(--text); }
+
+  /* ---- legend ---- */
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+
+  /* ---- info panel ---- */
+  .info-panel {
+    width: 100%;
+    max-width: 520px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .info-toggle {
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-family: inherit;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 10px 14px;
+    text-align: left;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .info-toggle:hover { color: var(--text); }
+  .info-toggle .arrow { transition: transform 0.2s; }
+  .info-toggle.open .arrow { transform: rotate(180deg); }
+  .info-body {
+    display: none;
+    padding: 0 14px 14px;
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--dim);
+  }
+  .info-body.visible { display: block; }
+  .info-body h3 {
+    color: var(--text);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 12px 0 6px;
+  }
+  .info-body h3:first-child { margin-top: 0; }
+  .info-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    align-items: flex-start;
+  }
+  .info-tag {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+  }
+  .tag-leader    { background: rgba(240,192,64,0.15);  color: var(--yellow); border: 1px solid rgba(240,192,64,0.3); }
+  .tag-follower  { background: rgba(64,208,176,0.12);  color: var(--teal);   border: 1px solid rgba(64,208,176,0.3); }
+  .tag-candidate { background: rgba(240,112,64,0.12);  color: var(--orange); border: 1px solid rgba(240,112,64,0.3); }
+  .tag-paused    { background: rgba(80,80,96,0.2);     color: var(--gray);   border: 1px solid rgba(80,80,96,0.3); }
+  .info-try {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .info-try-title { color: var(--text); margin-bottom: 4px; }
+  .info-step {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+  .info-step-n {
+    color: var(--yellow);
+    flex-shrink: 0;
+    min-width: 16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="status-dot" id="conn-dot"></div>
+  <h1>Distributed KV Store</h1>
+  <span class="subtitle">3-node Raft cluster · live</span>
+</header>
+
+<div class="layout">
+
+  <!-- cluster visualization -->
+  <div class="canvas-area">
+
+    <svg id="cluster" viewBox="0 0 520 360">
+      <defs>
+        <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L6,3 z" fill="#8880aa" opacity="0.7"/>
+        </marker>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="4" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <!-- nodes and edges rendered by JS -->
+      <line id="msg-line" x1="0" y1="0" x2="0" y2="0"
+            stroke="#8880aa" stroke-width="1.5" stroke-dasharray="4 4"
+            marker-end="url(#arrow)" opacity="0"/>
+    </svg>
+
+    <!-- legend -->
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#f0c040;box-shadow:0 0 6px #f0c040"></div>Leader</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#40d0b0"></div>Follower</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f07040"></div>Candidate</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#505060"></div>Paused</div>
+    </div>
+
+    <!-- info / instructions panel -->
+    <div class="info-panel">
+      <button class="info-toggle" id="info-toggle-btn" onclick="toggleInfo()">
+        <span>How to use this demo</span>
+        <span class="arrow">▾</span>
+      </button>
+      <div class="info-body" id="info-body">
+
+        <h3>Node status</h3>
+        <div class="info-row">
+          <span class="info-tag tag-leader">LEADER</span>
+          <span>The single node currently coordinating all writes. All PUT and DELETE commands are routed here. Shown in gold with a pulsing ring. The number inside (t:N) is the current <em>term</em> — a logical clock that increments each election.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-tag tag-follower">FOLLOWER</span>
+          <span>Passive replica. Receives log entries from the leader and applies them in order. Can serve GET requests from local state. If it stops hearing from the leader, its election timer fires and it becomes a Candidate.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-tag tag-candidate">CANDIDATE</span>
+          <span>Transitional state during an election. The node has incremented its term and is requesting votes from peers. If it collects a majority it becomes the new Leader; otherwise it waits and retries.</span>
+        </div>
+        <div class="info-row">
+          <span class="info-tag tag-paused">PAUSED</span>
+          <span>Simulates a network partition. The node is still running but ignores all Raft RPCs, making it invisible to the rest of the cluster.</span>
+        </div>
+
+        <h3>The replicated log</h3>
+        <span>Every committed write is an entry in the log. Each entry shows its index [N], the term it was created in (t:N), and the command. Entries only appear here once a majority of nodes have acknowledged them — that guarantee is what makes the store fault-tolerant.</span>
+
+        <h3>Try this</h3>
+        <div class="info-try">
+          <div class="info-try-title">Watch a re-election:</div>
+          <div class="info-step"><span class="info-step-n">1.</span><span>PUT a few keys so the log has some entries.</span></div>
+          <div class="info-step"><span class="info-step-n">2.</span><span>Click PARTITION on whichever node is currently the Leader.</span></div>
+          <div class="info-step"><span class="info-step-n">3.</span><span>Within ~400ms the other two nodes elect a new Leader.</span></div>
+          <div class="info-step"><span class="info-step-n">4.</span><span>PUT more keys — the cluster keeps accepting writes.</span></div>
+          <div class="info-step"><span class="info-step-n">5.</span><span>Click RECONNECT on the partitioned node — it catches up by replaying the log.</span></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- node controls (rendered by JS) -->
+    <div class="controls" id="node-controls"></div>
+
+    <button class="btn hard-restart" onclick="hardRestart()" style="max-width:520px;width:100%;border-color:var(--red);color:var(--red);margin-top:4px">
+      ⚠ HARD RESTART — wipe all state &amp; data
+    </button>
+
+  </div><!-- /canvas-area -->
+
+  <!-- right panel -->
+  <div class="right-panel">
+
+    <!-- commands -->
+    <div class="panel-section">
+      <h2>Commands</h2>
+
+      <div class="form-row">
+        <label>PUT</label>
+        <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+          <input id="put-key"   type="text" placeholder="key"   spellcheck="false">
+          <input id="put-value" type="text" placeholder="value" spellcheck="false">
+        </div>
+        <button class="btn" onclick="doPut()">▶</button>
+      </div>
+
+      <div class="form-row">
+        <label>GET</label>
+        <input id="get-key" type="text" placeholder="key" spellcheck="false">
+        <button class="btn" onclick="doGet()">▶</button>
+      </div>
+
+      <div class="form-row">
+        <label>DEL</label>
+        <input id="del-key" type="text" placeholder="key" spellcheck="false">
+        <button class="btn" onclick="doDel()">▶</button>
+      </div>
+
+      <div id="result" class="result-box">—</div>
+    </div>
+
+    <!-- log -->
+    <div class="log-panel">
+      <h2>Replicated Log</h2>
+      <div id="log-entries"></div>
+    </div>
+
+    <!-- kv store -->
+    <div class="kv-panel">
+      <h2>Store State</h2>
+      <div id="kv-table"></div>
+    </div>
+
+  </div><!-- /right-panel -->
+
+</div><!-- /layout -->
+
+<script src="cluster-config.js"></script>
+<script>
+// ---- Config ----
+const BASE_PORT = 8001;
+const N = Math.max(1, parseInt(window.CLUSTER_NODES || '3', 10));
+
+const NODES = Array.from({ length: N }, (_, i) => ({
+  id: i + 1,
+  addr: `http://localhost:${BASE_PORT + i}`,
+}));
+
+// Place nodes evenly around a circle in the SVG (cx=260, cy=180, r=130)
+const SVG_CX = 260, SVG_CY = 180, SVG_R = 130;
+const NODE_POS = {};
+NODES.forEach((node, i) => {
+  const angle = (2 * Math.PI * i / N) - Math.PI / 2;
+  NODE_POS[node.id] = [
+    Math.round(SVG_CX + SVG_R * Math.cos(angle)),
+    Math.round(SVG_CY + SVG_R * Math.sin(angle)),
+  ];
+});
+
+// ---- Build SVG nodes and edges ----
+(function buildSVG() {
+  const svg = document.getElementById('cluster');
+  const ns = 'http://www.w3.org/2000/svg';
+
+  // Edges between every pair
+  NODES.forEach((a) => {
+    NODES.forEach((b) => {
+      if (b.id <= a.id) return;
+      const [x1, y1] = NODE_POS[a.id];
+      const [x2, y2] = NODE_POS[b.id];
+      const line = document.createElementNS(ns, 'line');
+      line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+      line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+      line.setAttribute('stroke', '#2e2a4a'); line.setAttribute('stroke-width', '1');
+      svg.insertBefore(line, svg.querySelector('#msg-line'));
+    });
+  });
+
+  // Node groups
+  NODES.forEach(({ id }) => {
+    const [cx, cy] = NODE_POS[id];
+    const g = document.createElementNS(ns, 'g');
+    g.id = `node-g-${id}`; g.setAttribute('class', 'node-circle');
+
+    const ring = document.createElementNS(ns, 'circle');
+    ring.id = `node-ring-${id}`;
+    ring.setAttribute('cx', cx); ring.setAttribute('cy', cy); ring.setAttribute('r', '38');
+    ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', '#40d0b0');
+    ring.setAttribute('stroke-width', '2'); ring.setAttribute('opacity', '0.3');
+
+    const bg = document.createElementNS(ns, 'circle');
+    bg.id = `node-bg-${id}`;
+    bg.setAttribute('cx', cx); bg.setAttribute('cy', cy); bg.setAttribute('r', '32');
+    bg.setAttribute('fill', '#1e1a34'); bg.setAttribute('stroke', '#40d0b0');
+    bg.setAttribute('stroke-width', '2');
+
+    const role = document.createElementNS(ns, 'text');
+    role.id = `node-role-${id}`;
+    role.setAttribute('x', cx); role.setAttribute('y', cy - 3);
+    role.setAttribute('text-anchor', 'middle'); role.setAttribute('fill', '#40d0b0');
+    role.setAttribute('font-size', '10'); role.setAttribute('font-family', 'monospace');
+    role.setAttribute('letter-spacing', '0.08em');
+    role.textContent = 'FOLLOWER';
+
+    const label = document.createElementNS(ns, 'text');
+    label.id = `node-id-${id}`;
+    label.setAttribute('x', cx); label.setAttribute('y', cy + 13);
+    label.setAttribute('text-anchor', 'middle'); label.setAttribute('fill', '#e8e4ff');
+    label.setAttribute('font-size', '11'); label.setAttribute('font-weight', 'bold');
+    label.textContent = `N${id}`;
+
+    const term = document.createElementNS(ns, 'text');
+    term.id = `node-term-${id}`;
+    term.setAttribute('x', cx); term.setAttribute('y', cy + 26);
+    term.setAttribute('text-anchor', 'middle'); term.setAttribute('fill', '#8880aa');
+    term.setAttribute('font-size', '9');
+    term.textContent = 't:0';
+
+    g.append(ring, bg, role, label, term);
+    svg.appendChild(g);
+  });
+})();
+
+// ---- Build node control buttons ----
+(function buildControls() {
+  const container = document.getElementById('node-controls');
+  NODES.forEach(({ id }) => {
+    const div = document.createElement('div');
+    div.className = 'node-controls';
+    div.innerHTML = `
+      <span class="node-label-ctrl">Node ${id}</span>
+      <button class="btn kill"   onclick="pauseNode(${id})">PARTITION</button>
+      <button class="btn resume" onclick="resumeNode(${id})">RECONNECT</button>
+    `;
+    container.appendChild(div);
+  });
+})();
+
+// ---- State ----
+const nodeState = {};
+NODES.forEach(n => { nodeState[n.id] = null; });
+let knownLeader = -1;
+let renderedLog = [];
+
+// ---- SSE connections ----
+function connectSSE(node) {
+  const es = new EventSource(`${node.addr}/events`);
+  es.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      handleEvent(node.id, event);
+    } catch (_) {}
+  };
+  es.onerror = () => {
+    // Retry silently; the node may be starting up
+    setTimeout(() => es.close(), 2000);
+    setTimeout(() => connectSSE(node), 3000);
+  };
+}
+
+NODES.forEach(connectSSE);
+
+// ---- Event handler ----
+function handleEvent(nodeId, event) {
+  if (event.type === 'roleChange' || event.type === 'statusUpdate') {
+    const d = event.data;
+    nodeState[nodeId] = d;
+    renderNode(nodeId, d);
+
+    if (d.role === 'leader') knownLeader = nodeId;
+
+    // Refresh log from any node that has entries
+    if (d.log && d.log.length > renderedLog.length) {
+      renderedLog = d.log;
+      renderLog(d.log);
+    }
+  }
+
+  if (event.type === 'commit') {
+    refreshKV();
+  }
+
+  if (event.type === 'logAppend') {
+    const d = event.data;
+    flashMessage(d.nodeId, d.nodeId); // self-send flash
+    refreshKV();
+  }
+}
+
+// ---- Render node in SVG ----
+const ROLE_COLOR = {
+  leader:    '#f0c040',
+  candidate: '#f07040',
+  follower:  '#40d0b0',
+  paused:    '#505060',
+};
+const ROLE_GLOW = {
+  leader:    '0 0 12px #f0c040',
+  candidate: '0 0 8px #f07040',
+  follower:  'none',
+  paused:    'none',
+};
+
+function renderNode(id, status) {
+  const role   = status.paused ? 'paused' : status.role;
+  const color  = ROLE_COLOR[role] || '#40d0b0';
+  const roleEl = document.getElementById(`node-role-${id}`);
+  const bgEl   = document.getElementById(`node-bg-${id}`);
+  const ringEl = document.getElementById(`node-ring-${id}`);
+  const termEl = document.getElementById(`node-term-${id}`);
+
+  if (roleEl) roleEl.textContent = role.toUpperCase();
+  if (roleEl) roleEl.setAttribute('fill', color);
+  if (bgEl)   bgEl.setAttribute('stroke', color);
+  if (ringEl) {
+    ringEl.setAttribute('stroke', color);
+    ringEl.setAttribute('opacity', role === 'leader' ? '0.6' : '0.25');
+  }
+  if (termEl) termEl.textContent = `t:${status.term}`;
+
+  // Pulse ring animation for leader
+  if (role === 'leader') {
+    ringEl.style.animation = 'none';
+    ringEl.style.animation = 'ringPulse 1.4s ease-in-out infinite';
+  } else {
+    ringEl.style.animation = 'none';
+  }
+}
+
+// inject ring keyframes once
+const styleTag = document.createElement('style');
+styleTag.textContent = `@keyframes ringPulse {
+  0%,100% { r: 38; opacity: 0.6; }
+  50%      { r: 44; opacity: 0.2; }
+}`;
+document.head.appendChild(styleTag);
+
+// ---- Message flash animation ----
+function flashMessage(fromId, toId) {
+  if (fromId === toId) return;
+  const [x1, y1] = NODE_POS[fromId] || [0, 0];
+  const [x2, y2] = NODE_POS[toId]   || [0, 0];
+  const line = document.getElementById('msg-line');
+  if (!line) return;
+  line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+  line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+  line.setAttribute('opacity', '0.8');
+  setTimeout(() => line.setAttribute('opacity', '0'), 300);
+}
+
+// ---- Replicated log ----
+function renderLog(entries) {
+  const el = document.getElementById('log-entries');
+  el.innerHTML = '';
+  // Show most recent entries (up to 30)
+  const slice = entries.slice(-30).reverse();
+  slice.forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'log-entry';
+    div.innerHTML = `
+      <span class="log-idx">[${e.index}]</span>
+      <span class="log-term">t${e.term}</span>
+      <span class="log-cmd">${escHtml(e.command)}</span>
+    `;
+    el.appendChild(div);
+  });
+}
+
+// ---- KV table ----
+async function refreshKV() {
+  // Try each node until one responds
+  for (const node of NODES) {
+    try {
+      const r = await fetch(`${node.addr}/kv/all`);
+      if (!r.ok) continue;
+      const data = await r.json();
+      renderKV(data);
+      return;
+    } catch (_) {}
+  }
+}
+
+function renderKV(data) {
+  const el = document.getElementById('kv-table');
+  const keys = Object.keys(data).sort();
+  if (keys.length === 0) {
+    el.innerHTML = '<span style="color:var(--dim);font-size:11px">empty</span>';
+    return;
+  }
+  el.innerHTML = keys.map(k =>
+    `<div class="kv-pair"><span class="kv-k">${escHtml(k)}</span>: <span class="kv-v">${escHtml(data[k])}</span></div>`
+  ).join('');
+}
+
+// ---- Commands ----
+async function leaderAddr() {
+  // Try the known leader first, then poll all
+  if (knownLeader > 0) {
+    return NODES[knownLeader - 1].addr;
+  }
+  for (const node of NODES) {
+    try {
+      const r = await fetch(`${node.addr}/status`);
+      if (!r.ok) continue;
+      const s = await r.json();
+      if (s.role === 'leader') {
+        knownLeader = s.id;
+        return node.addr;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function doPut() {
+  const key   = document.getElementById('put-key').value.trim();
+  const value = document.getElementById('put-value').value.trim();
+  if (!key) return setResult('key is required', true);
+
+  const addr = await leaderAddr();
+  if (!addr) return setResult('no leader found — is the cluster running?', true);
+
+  try {
+    const r = await fetch(`${addr}/kv/put`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, value }),
+    });
+
+    if (r.status === 421) {
+      // Not the leader — find new leader and retry
+      knownLeader = -1;
+      return doPut();
+    }
+    if (!r.ok) {
+      const txt = await r.text();
+      return setResult(txt, true);
+    }
+    const data = await r.json();
+    setResult(`put ${data.key} = "${data.value}" → committed at log[${data.index}]`);
+    refreshKV();
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
+async function doGet() {
+  const key = document.getElementById('get-key').value.trim();
+  if (!key) return setResult('key is required', true);
+
+  // GET can be served by any node
+  for (const node of NODES) {
+    try {
+      const r = await fetch(`${node.addr}/kv/get?key=${encodeURIComponent(key)}`);
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (data.ok) {
+        setResult(`"${key}" → "${data.value}"`);
+      } else {
+        setResult(`"${key}" → (not found)`, true);
+      }
+      return;
+    } catch (_) {}
+  }
+  setResult('no nodes responding', true);
+}
+
+async function doDel() {
+  const key = document.getElementById('del-key').value.trim();
+  if (!key) return setResult('key is required', true);
+
+  const addr = await leaderAddr();
+  if (!addr) return setResult('no leader found', true);
+
+  try {
+    const r = await fetch(`${addr}/kv/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    if (!r.ok) {
+      knownLeader = -1;
+      const txt = await r.text();
+      return setResult(txt, true);
+    }
+    setResult(`deleted "${key}"`);
+    refreshKV();
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
+async function hardRestart() {
+  if (!confirm('Wipe all Raft state, log, and KV data on every node?')) return;
+  knownLeader = -1;
+  renderedLog = [];
+  for (const node of NODES) {
+    try { await fetch(`${node.addr}/admin/reset`, { method: 'POST' }); } catch (_) {}
+  }
+  document.getElementById('log-entries').innerHTML = '';
+  document.getElementById('kv-table').innerHTML = '<span style="color:var(--dim);font-size:11px">empty</span>';
+  setResult('Hard restart complete — waiting for new leader election…');
+}
+
+async function pauseNode(id) {
+  try {
+    await fetch(`${NODES[id-1].addr}/admin/pause`, { method: 'POST' });
+    setResult(`Node ${id} partitioned — watch the re-election`);
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
+async function resumeNode(id) {
+  try {
+    await fetch(`${NODES[id-1].addr}/admin/resume`, { method: 'POST' });
+    setResult(`Node ${id} reconnected`);
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
+function setResult(msg, isError = false) {
+  const el = document.getElementById('result');
+  el.textContent = msg;
+  el.className = 'result-box' + (isError ? ' error' : '');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ---- Poll status periodically for robustness ----
+async function pollStatus() {
+  for (const node of NODES) {
+    try {
+      const r = await fetch(`${node.addr}/status`);
+      if (!r.ok) continue;
+      const s = await r.json();
+      nodeState[node.id] = s;
+      renderNode(node.id, s);
+      if (s.role === 'leader') {
+        knownLeader = node.id;
+        if (s.log && s.log.length > renderedLog.length) {
+          renderedLog = s.log;
+          renderLog(s.log);
+        }
+      }
+    } catch (_) {
+      // Node unreachable — grey it out
+      renderNode(node.id, { role: 'paused', term: 0, paused: true });
+    }
+  }
+}
+
+setInterval(pollStatus, 600);
+pollStatus();
+setInterval(refreshKV, 2000);
+
+// Enter key on inputs
+['put-key','put-value'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key==='Enter') doPut(); });
+});
+document.getElementById('get-key').addEventListener('keydown', e => { if (e.key==='Enter') doGet(); });
+document.getElementById('del-key').addEventListener('keydown', e => { if (e.key==='Enter') doDel(); });
+
+// ---- Info panel toggle ----
+function toggleInfo() {
+  const btn  = document.getElementById('info-toggle-btn');
+  const body = document.getElementById('info-body');
+  const open = body.classList.toggle('visible');
+  btn.classList.toggle('open', open);
+}
+</script>
+</body>
+</html>
